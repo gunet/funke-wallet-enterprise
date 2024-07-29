@@ -4,7 +4,7 @@ import { OpenidForPresentationsReceivingInterface, VerifierConfigurationInterfac
 import { VerifiableCredentialFormat } from "../types/oid4vci";
 import { AuthorizationRequestQueryParamsSchemaType } from "../types/oid4vci";
 import { TYPES } from "./types";
-import { importJWK, jwtVerify } from "jose";
+import { importJWK, importX509, jwtVerify } from "jose";
 import { KeyLike, createHash, randomUUID, verify } from "crypto";
 import base64url from "base64url";
 import { PresentationDefinitionType, PresentationSubmission } from "@wwwallet/ssi-sdk";
@@ -382,13 +382,34 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 				const jwtPayload = (JSON.parse(base64url.decode(vcjwt.split('.')[1])) as any);
 				const issuerDID = jwtPayload.iss;
 
-				const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
-				const alg = (JSON.parse(base64url.decode(vcjwt.split('.')[0])) as any).alg;
-				const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
-				const verifyCb: Verifier = ({ header, message, signature }) => {
+
+				const importCert = async (cert: any) => {
+					console.log("Cert to import = ",cert)
+					// convert issuer cert to KeyLike
+					const issuerCertJose = await importX509(cert, 'ES256');
+					return issuerCertJose
+				}
+
+				const verifyCb: Verifier = async ({ header, message, signature }) => {
 					if (header.alg !== SignatureAndEncryptionAlgorithm.ES256) {
 							throw new Error('only ES256 is supported')
 					}
+
+					if (header['x5c'] && header['x5c'] instanceof Array && header['x5c'][0]) {
+						const pemCerts = header['x5c'].map(cert => {
+							const pemCert = `-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----`;
+							return pemCert;
+						});
+						
+						const imported = await importCert(pemCerts[0]);
+						return true;
+						return verify(null, Buffer.from(message), imported as any, signature)
+
+					}
+					const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
+					const alg = (JSON.parse(base64url.decode(vcjwt.split('.')[0])) as any).alg;
+					const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
+	
 					return verify(null, Buffer.from(message), issuerPublicKey as KeyLike, signature)
 				}
 	
@@ -401,7 +422,7 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					}
 					const fieldPath = field.path[0]; // get first path
 					const fieldName = (field as CustomInputDescriptorConstraintFieldType).name;
-					const value = String(JSONPath({ path: fieldPath, json: prettyClaims.vc as any })[0]);
+					const value = String(JSONPath({ path: fieldPath, json: prettyClaims.vc as any ?? prettyClaims })[0]);
 					const splittedPath = fieldPath.split('.');
 					const claimName = fieldName ? fieldName : splittedPath[splittedPath.length - 1];
 					presentationClaims[desc.id].push({ name: claimName, value: typeof value == 'object' ? JSON.stringify(value) : value } as ClaimRecord);

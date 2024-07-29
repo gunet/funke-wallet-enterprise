@@ -84,7 +84,7 @@ verifierRouter.get('/success', async (req, res) => {
 			return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
 				.withHasher(hasherAndAlgorithm)
 				.getPrettyClaims()
-				.then((payload) => payload.vc);
+				.then((payload) => payload.vc ?? payload);
 		}
 		else {
 			return JSON.parse(base64url.decode(vcString.split('.')[1]));
