@@ -177,11 +177,7 @@ verifierRouter.use('/public/definitions/presentation-request/:presentation_defin
 			selectedFields = [selectedFields];
 		}
 		const selectedPaths = new Set(selectedFields.map((field: string) => {
-			if (field === "type") {
 				return `$.${field}`;
-			} else {
-				return `$.credentialSubject.${field}`;
-			}
 		}));
 		// Filter existing paths to keep only those selected by the user and update presentationDefinition
 		const availableFields = presentationDefinition.input_descriptors[0].constraints.fields;
