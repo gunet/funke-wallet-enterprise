@@ -8,6 +8,28 @@ import { TYPES } from "../services/types";
 import { OpenidForPresentationsReceivingInterface, VerifierConfigurationInterface } from "../services/interfaces";
 import base64url from "base64url";
 import locale from "../configuration/locale";
+import crypto from 'node:crypto';
+
+import {
+	HasherAndAlgorithm,
+	HasherAlgorithm,
+	SdJwt,
+} from '@sd-jwt/core'
+
+
+// Encoding the string into a Uint8Array
+const hasherAndAlgorithm: HasherAndAlgorithm = {
+	hasher: (input: string) => {
+		// return crypto.subtle.digest('SHA-256', encoder.encode(input)).then((v) => new Uint8Array(v));
+		return new Promise((resolve, _reject) => {
+			const hash = crypto.createHash('sha256');
+			hash.update(input);
+			resolve(new Uint8Array(hash.digest()));
+		});
+	},
+	algorithm: HasherAlgorithm.Sha256
+}
+
 
 const openidForPresentationReceivingService = appContainer.get<OpenidForPresentationsReceivingInterface>(TYPES.OpenidForPresentationsReceivingService);
 
@@ -81,9 +103,17 @@ verifierPanelRouter.get('/presentation/:presentation_id', async (req, res) => {
 	}
 
 	const presentationPayload = JSON.parse(base64url.decode(rawPresentation.split('.')[1])) as any;
-	const credentials = presentationPayload.vp.verifiableCredential.map((vcString: any) => {
-		return JSON.parse(base64url.decode(vcString.split('.')[1]));
-	}).map((credential: any) => credential.vc);
+	const credentials = await Promise.all(presentationPayload.vp.verifiableCredential.map(async (vcString: any) => {
+		if (vcString.includes('~')) {
+			return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
+				.withHasher(hasherAndAlgorithm)
+				.getPrettyClaims()
+				.then((payload) => payload.vc ?? payload);
+		}
+		else {
+			return JSON.parse(base64url.decode(vcString.split('.')[1]));
+		}
+	}));
 
 	return res.render('verifier/detailed-presentation.pug', {
 		lang: req.lang,

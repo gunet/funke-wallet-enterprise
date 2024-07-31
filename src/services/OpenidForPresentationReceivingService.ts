@@ -4,8 +4,8 @@ import { OpenidForPresentationsReceivingInterface, VerifierConfigurationInterfac
 import { VerifiableCredentialFormat } from "../types/oid4vci";
 import { AuthorizationRequestQueryParamsSchemaType } from "../types/oid4vci";
 import { TYPES } from "./types";
-import { importJWK, jwtVerify } from "jose";
-import { KeyLike, createHash, randomUUID, verify } from "crypto";
+import { importJWK, importX509, jwtVerify } from "jose";
+import { KeyLike, createHash, randomUUID, verify, X509Certificate } from "crypto";
 import base64url from "base64url";
 import { PresentationDefinitionType, PresentationSubmission } from "@wwwallet/ssi-sdk";
 import 'reflect-metadata';
@@ -18,6 +18,8 @@ import { AuthorizationServerState } from "../entities/AuthorizationServerState.e
 import config from "../../config";
 import { DidKeyResolverService } from "./DidKeyResolverService";
 import { HasherAlgorithm, HasherAndAlgorithm, SdJwt, SignatureAndEncryptionAlgorithm, Verifier } from "@sd-jwt/core";
+import fs from 'fs';
+import path from "path";
 
 // https://identity.foundation/presentation-exchange/
 // The fields object MAY contain a name property. If present, its value MUST be a string, and SHOULD be a human-friendly name that describes what the target field represents.
@@ -45,6 +47,46 @@ const CLOCK_TOLERANCE = '15 minutes';
 
 const clientStates = new Map<string, string>(); // key: state given by the client, value: verifierStateId
 const nonces = new Map<string, string>(); // key: nonce, value: verifierStateId
+
+const rootCert = fs.readFileSync(path.join(__dirname, '../../../keys/root.pem'), 'utf-8');
+
+
+async function verifyCertificateChain(rootCert: string, pemCertChain: string[]) {
+	const x509TrustAnchor = new X509Certificate(rootCert);
+	const isLastCertTrusted = new X509Certificate(pemCertChain[pemCertChain.length-1]).verify(x509TrustAnchor.publicKey);
+	if (!isLastCertTrusted) {
+		return false;
+	}
+	for (let i = 0; i < pemCertChain.length; i++) {
+		if (pemCertChain[i+1]) {
+			const isTrustedCert = new X509Certificate(pemCertChain[i]).verify(new X509Certificate(pemCertChain[i+1]).publicKey);
+			if (!isTrustedCert) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+function uint8ArrayToBase64Url(array: any) {
+	// Convert the Uint8Array to a binary string
+	let binaryString = '';
+	array.forEach((byte: any) => {
+		binaryString += String.fromCharCode(byte);
+	});
+
+	// Convert the binary string to a Base64 string
+	let base64String = btoa(binaryString);
+
+	// Convert the Base64 string to Base64URL format
+	let base64UrlString = base64String
+		.replace(/\+/g, '-') // Replace + with -
+		.replace(/\//g, '_') // Replace / with _
+		.replace(/=+$/, ''); // Remove trailing '='
+
+	return base64UrlString;
+}
+
 
 @injectable()
 export class OpenidForPresentationsReceivingService implements OpenidForPresentationsReceivingInterface {
@@ -382,13 +424,33 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 				const jwtPayload = (JSON.parse(base64url.decode(vcjwt.split('.')[1])) as any);
 				const issuerDID = jwtPayload.iss;
 
-				const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
-				const alg = (JSON.parse(base64url.decode(vcjwt.split('.')[0])) as any).alg;
-				const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
-				const verifyCb: Verifier = ({ header, message, signature }) => {
+
+				const verifyCb: Verifier = async ({ header, message, signature }) => {
 					if (header.alg !== SignatureAndEncryptionAlgorithm.ES256) {
 							throw new Error('only ES256 is supported')
 					}
+					if (header['x5c'] && header['x5c'] instanceof Array && header['x5c'][0]) {
+						const pemCerts = header['x5c'].map(cert => {
+							const pemCert = `-----BEGIN CERTIFICATE-----\n${cert}\n-----END CERTIFICATE-----`;
+							return pemCert;
+						});
+
+						const chainIsTrusted = await verifyCertificateChain(rootCert, pemCerts);
+						if (!chainIsTrusted) {
+							console.log("Chain is not trusted");
+							return false;
+						}
+						const cert = await importX509(pemCerts[0], 'ES256');						
+						return jwtVerify(message + '.' + uint8ArrayToBase64Url(signature), cert).then(() => true).catch((err: any) => {
+							console.log("Error verifying")
+							console.error(err);
+							return false;
+						});
+					}
+					const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
+					const alg = (JSON.parse(base64url.decode(vcjwt.split('.')[0])) as any).alg;
+					const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
+	
 					return verify(null, Buffer.from(message), issuerPublicKey as KeyLike, signature)
 				}
 	
@@ -401,7 +463,7 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					}
 					const fieldPath = field.path[0]; // get first path
 					const fieldName = (field as CustomInputDescriptorConstraintFieldType).name;
-					const value = String(JSONPath({ path: fieldPath, json: prettyClaims.vc as any })[0]);
+					const value = String(JSONPath({ path: fieldPath, json: prettyClaims.vc as any ?? prettyClaims })[0]);
 					const splittedPath = fieldPath.split('.');
 					const claimName = fieldName ? fieldName : splittedPath[splittedPath.length - 1];
 					presentationClaims[desc.id].push({ name: claimName, value: typeof value == 'object' ? JSON.stringify(value) : value } as ClaimRecord);

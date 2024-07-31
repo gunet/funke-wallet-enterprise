@@ -84,7 +84,7 @@ verifierRouter.get('/success', async (req, res) => {
 			return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
 				.withHasher(hasherAndAlgorithm)
 				.getPrettyClaims()
-				.then((payload) => payload.vc);
+				.then((payload) => payload.vc ?? payload);
 		}
 		else {
 			return JSON.parse(base64url.decode(vcString.split('.')[1]));
@@ -177,11 +177,7 @@ verifierRouter.use('/public/definitions/presentation-request/:presentation_defin
 			selectedFields = [selectedFields];
 		}
 		const selectedPaths = new Set(selectedFields.map((field: string) => {
-			if (field === "type") {
 				return `$.${field}`;
-			} else {
-				return `$.credentialSubject.${field}`;
-			}
 		}));
 		// Filter existing paths to keep only those selected by the user and update presentationDefinition
 		const availableFields = presentationDefinition.input_descriptors[0].constraints.fields;

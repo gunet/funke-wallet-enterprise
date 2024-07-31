@@ -5,11 +5,12 @@ block layout-content
 		.container2
 			.centered-layout
 				h1 Detailed Presentation
+				- const ausweis_card = '/images/ausweis_card.png'
 				.inline-box-container(style="display: flex; gap:30px; flex-direction: row; flex-wrap: wrap;justify-content: center;")
 					// Iterate over each credential and display an inline box with dynamic background color and text color
-					each credential, index in credentialPayloads
-						- const branding = credential.credentialBranding || { backgroundColor: 'red', textColor: 'black' }
-						- const imageUrl = credential.credentialBranding.image.url // Get the corresponding image URL
+					each parsedCredential, index in credentialPayloads
+						- const branding = parsedCredential?.credentialBranding || { backgroundColor: 'red', textColor: 'black' }
+						- const imageUrl = parsedCredential?.credentialBranding?.image?.url ?? ausweis_card
 						.credential-box(style=`position:relative;overflow:hidden;display: flex; flex-direction: column; justify-content: flex-start; align-items: flex-start; position: relative; margin: 10px;border-radius:10px;`, id=`credential-box-${index}`)
 							img(style="width: 240px; height: 150px; border-radius: 10px;")(src=imageUrl)
 
