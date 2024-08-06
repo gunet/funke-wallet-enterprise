@@ -16,7 +16,7 @@
   "author": "",
   "description": "",
   "dependencies": {
-    "@auth0/mdl": "./auth0-mdl-v0.3.0-wwwallet-build.tgz",
+    "@auth0/mdl": "./auth0-mdl-v0.3.0-wwwallet-build-1722929256.tgz",
     "@digitalbazaar/did-io": "^2.0.0",
     "@digitalbazaar/did-method-key": "^5.1.0",
     "@peculiar/x509": "^1.9.5",
