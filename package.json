@@ -16,8 +16,10 @@
   "author": "",
   "description": "",
   "dependencies": {
+    "@auth0/mdl": "./auth0-mdl-v0.3.0-wwwallet-build-1722929256.tgz",
     "@digitalbazaar/did-io": "^2.0.0",
     "@digitalbazaar/did-method-key": "^5.1.0",
+    "@peculiar/x509": "^1.9.5",
     "@sd-jwt/core": "^0.2.1",
     "@transmute/did-key-ed25519": "^0.3.0-unstable.10",
     "@wwwallet/ssi-sdk": "^1.0.8",
@@ -25,6 +27,7 @@
     "axios": "^0.27.2",
     "base64url": "^3.0.1",
     "body-parser": "^1.20.0",
+    "cbor-x": "^1.6.0",
     "client-oauth2": "^4.3.3",
     "connect-redis": "^7.0.1",
     "cookie-parser": "^1.4.6",
@@ -78,5 +81,9 @@
     "nodemon": "^2.0.19",
     "source-map-support": "^0.5.21",
     "typescript": "^4.8.3"
+  },
+	"resolutions": {
+    "@peculiar/asn1-schema": "2.3.13",
+    "@peculiar/x509": "1.11.0"
   }
 }

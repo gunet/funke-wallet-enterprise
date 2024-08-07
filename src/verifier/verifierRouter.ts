@@ -16,6 +16,8 @@ import {
 	HasherAndAlgorithm,
 	SdJwt,
 } from '@sd-jwt/core'
+import { VerifiableCredentialFormat } from "../types/oid4vci";
+import { parse } from "@auth0/mdl";
 
 export enum CredentialFormat {
 	VC_SD_JWT = "vc+sd-jwt",
@@ -64,6 +66,7 @@ verifierRouter.get('/success/status', async (req, res) => { // response with the
 verifierRouter.get('/success', async (req, res) => {
 	const state = req.query.state;
 	const result = await openidForPresentationReceivingService.getPresentationByState(state as string);
+	console.log("Presentation by state = ", result)
 	if (result.status == false || 
 			result.vp.raw_presentation == null ||
 			result.vp.claims == null ||
@@ -76,22 +79,34 @@ verifierRouter.get('/success', async (req, res) => {
 		})
 	}
 	
-	const { status, raw_presentation, claims, date } = result.vp;
+	const { status, raw_presentation, claims, date, presentation_submission } = result.vp;
 
-	const presentationPayload = JSON.parse(base64url.decode(raw_presentation.split('.')[1])) as any;
-	const credentials = await Promise.all(presentationPayload.vp.verifiableCredential.map(async (vcString: any) => {
-		if (vcString.includes('~')) {
-			return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
-				.withHasher(hasherAndAlgorithm)
-				.getPrettyClaims()
-				.then((payload) => payload.vc ?? payload);
-		}
-		else {
-			return JSON.parse(base64url.decode(vcString.split('.')[1]));
-		}
-	}));
+	let credentials = [];
+	if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.MSO_MDOC) {
+		const mdoc = parse(Buffer.from(raw_presentation, 'base64url'));
+		const [document] = mdoc.documents;
+	
+		// decode the namespaces and add them to the document
+		// @ts-ignore
+		document.issuerSigned.nameSpaces[presentation_submission.descriptor_map[0].id] = document.getIssuerNameSpace(presentation_submission.descriptor_map[0].id);
+		credentials = [ document ];
+	}
+	else if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.VC_SD_JWT) {
+		const presentationPayload = JSON.parse(base64url.decode(raw_presentation.split('.')[1])) as any;
+		credentials = await Promise.all(presentationPayload.vp.verifiableCredential.map(async (vcString: any) => {
+			if (vcString.includes('~')) {
+				return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
+					.withHasher(hasherAndAlgorithm)
+					.getPrettyClaims()
+					.then((payload) => payload.vc ?? payload);
+			}
+			else {
+				return JSON.parse(base64url.decode(vcString.split('.')[1]));
+			}
+		}));
+	}
+	
 
-	console.log('credentials = ', credentials)
 
 	return res.render('verifier/success.pug', {
 		lang: req.lang,
