@@ -10,6 +10,7 @@ RUN --mount=type=secret,id=npmrc,required=true,target=./.npmrc,uid=1000 \
 FROM node:20-bullseye-slim AS production
 WORKDIR /home/node/app
 
+COPY --from=builder /home/node/app/auth0-mdl-v0.3.0-wwwallet-build-1722929256.tgz .
 COPY --from=builder /home/node/app/package.json .
 COPY --from=builder /home/node/app/dist ./dist
 COPY --from=builder /home/node/app/public ./public
