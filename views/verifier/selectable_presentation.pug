@@ -7,6 +7,10 @@ block layout-content
 					h2 Select the fields you wish to present
 					.left-layout
 						.checkbox
+							input(type='checkbox' id="issuing_country" name='fields' value='issuing_country' checked disabled)
+							label(for='issuing_country') Issuing Country
+							input(type='hidden' name='fields' value='issuing_country')
+						.checkbox
 							input(type='checkbox' id="given_name" name='fields' value='given_name')
 							label(for='given_name') Given Name
 						.checkbox
