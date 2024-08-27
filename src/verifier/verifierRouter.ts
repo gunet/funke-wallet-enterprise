@@ -8,7 +8,6 @@ import { TYPES } from "../services/types";
 import locale from "../configuration/locale";
 import * as qrcode from 'qrcode';
 import config from "../../config";
-import base64url from "base64url";
 import { PresentationDefinitionTypeWithFormat } from "../configuration/verifier/VerifierConfigurationService";
 import crypto from 'node:crypto';
 import {
@@ -81,7 +80,7 @@ verifierRouter.get('/success', async (req, res) => {
 	
 	const { status, raw_presentation, claims, date, presentation_submission } = result.vp;
 
-	let credentials = [];
+	let credentials: any[] = [];
 	if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.MSO_MDOC) {
 		const mdoc = parse(Buffer.from(raw_presentation, 'base64url'));
 		const [document] = mdoc.documents;
@@ -92,18 +91,12 @@ verifierRouter.get('/success', async (req, res) => {
 		credentials = [ document ];
 	}
 	else if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.VC_SD_JWT) {
-		const presentationPayload = JSON.parse(base64url.decode(raw_presentation.split('.')[1])) as any;
-		credentials = await Promise.all(presentationPayload.vp.verifiableCredential.map(async (vcString: any) => {
-			if (vcString.includes('~')) {
-				return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
-					.withHasher(hasherAndAlgorithm)
-					.getPrettyClaims()
-					.then((payload) => payload.vc ?? payload);
-			}
-			else {
-				return JSON.parse(base64url.decode(vcString.split('.')[1]));
-			}
-		}));
+		credentials = [
+			await SdJwt.fromCompact<Record<string, unknown>, any>(raw_presentation)
+				.withHasher(hasherAndAlgorithm)
+				.getPrettyClaims()
+				.then((payload: any) => payload.vc ?? payload)
+		]
 	}
 	
 

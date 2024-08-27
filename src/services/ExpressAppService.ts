@@ -23,6 +23,7 @@ export class ExpressAppService {
 	public configure(app: Application) {
 		// exposed in any mode
 		app.post('/verification/direct_post', this.directPostEndpoint());
+		app.get('/verification/request-object', async (req, res) => { this.presentationsReceivingService.getSignedRequestObject({req, res} )});
 		app.get('/verification/definition', async (req, res) => { this.presentationsReceivingService.getPresentationDefinitionHandler({req, res}); });
 		
 
