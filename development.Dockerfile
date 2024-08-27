@@ -1,14 +1,14 @@
-FROM node:16-bullseye-slim as dependencies
+FROM node:20-bullseye-slim as dependencies
 
 WORKDIR /dependencies
 
 # Install dependencies first so rebuild of these layers is only needed when dependencies change
-COPY package.json yarn.lock ./
+COPY package.json yarn.lock auth0-mdl-v0.3.0-wwwallet-build-1722929256.tgz ./
 RUN --mount=type=secret,id=npmrc,required=true,target=./.npmrc,uid=1000 \
-    yarn install
+    yarn cache clean -f && yarn install
 
 
-FROM node:16-bullseye-slim as development
+FROM node:20-bullseye-slim as development
 
 ENV NODE_PATH=/node_modules
 COPY --from=dependencies /dependencies/node_modules /node_modules

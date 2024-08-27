@@ -8,7 +8,6 @@ import { TYPES } from "../services/types";
 import locale from "../configuration/locale";
 import * as qrcode from 'qrcode';
 import config from "../../config";
-import base64url from "base64url";
 import { PresentationDefinitionTypeWithFormat } from "../configuration/verifier/VerifierConfigurationService";
 import crypto from 'node:crypto';
 import {
@@ -16,6 +15,8 @@ import {
 	HasherAndAlgorithm,
 	SdJwt,
 } from '@sd-jwt/core'
+import { VerifiableCredentialFormat } from "../types/oid4vci";
+import { parse } from "@auth0/mdl";
 
 export enum CredentialFormat {
 	VC_SD_JWT = "vc+sd-jwt",
@@ -64,6 +65,7 @@ verifierRouter.get('/success/status', async (req, res) => { // response with the
 verifierRouter.get('/success', async (req, res) => {
 	const state = req.query.state;
 	const result = await openidForPresentationReceivingService.getPresentationByState(state as string);
+	console.log("Presentation by state = ", result)
 	if (result.status == false || 
 			result.vp.raw_presentation == null ||
 			result.vp.claims == null ||
@@ -76,22 +78,28 @@ verifierRouter.get('/success', async (req, res) => {
 		})
 	}
 	
-	const { status, raw_presentation, claims, date } = result.vp;
+	const { status, raw_presentation, claims, date, presentation_submission } = result.vp;
 
-	const presentationPayload = JSON.parse(base64url.decode(raw_presentation.split('.')[1])) as any;
-	const credentials = await Promise.all(presentationPayload.vp.verifiableCredential.map(async (vcString: any) => {
-		if (vcString.includes('~')) {
-			return SdJwt.fromCompact<Record<string, unknown>, any>(vcString)
+	let credentials: any[] = [];
+	if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.MSO_MDOC) {
+		const mdoc = parse(Buffer.from(raw_presentation, 'base64url'));
+		const [document] = mdoc.documents;
+	
+		// decode the namespaces and add them to the document
+		// @ts-ignore
+		document.issuerSigned.nameSpaces[presentation_submission.descriptor_map[0].id] = document.getIssuerNameSpace(presentation_submission.descriptor_map[0].id);
+		credentials = [ document ];
+	}
+	else if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.VC_SD_JWT) {
+		credentials = [
+			await SdJwt.fromCompact<Record<string, unknown>, any>(raw_presentation)
 				.withHasher(hasherAndAlgorithm)
 				.getPrettyClaims()
-				.then((payload) => payload.vc);
-		}
-		else {
-			return JSON.parse(base64url.decode(vcString.split('.')[1]));
-		}
-	}));
+				.then((payload: any) => payload.vc ?? payload)
+		]
+	}
+	
 
-	console.log('credentials = ', credentials)
 
 	return res.render('verifier/success.pug', {
 		lang: req.lang,
@@ -169,11 +177,7 @@ verifierRouter.use('/public/definitions/presentation-request/:presentation_defin
 			selectedFields = [selectedFields];
 		}
 		const selectedPaths = new Set(selectedFields.map((field: string) => {
-			if (field === "type") {
 				return `$.${field}`;
-			} else {
-				return `$.credentialSubject.${field}`;
-			}
 		}));
 		// Filter existing paths to keep only those selected by the user and update presentationDefinition
 		const availableFields = presentationDefinition.input_descriptors[0].constraints.fields;

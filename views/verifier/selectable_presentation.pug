@@ -7,20 +7,25 @@ block layout-content
 					h2 Select the fields you wish to present
 					.left-layout
 						.checkbox
-							input(type='checkbox' id="type" name='fields' value='type' checked disabled)
-							label(for='type') Type
-							input(type='hidden' name='fields' value='type')
+							input(type='checkbox' id="issuing_country" name='fields' value='issuing_country' checked disabled)
+							label(for='issuing_country') Issuing Country
+							input(type='hidden' name='fields' value='issuing_country')
 						.checkbox
-							input(type='checkbox' id="firstName" name='fields' value='firstName')
-							label(for='firstName') First Name
+							input(type='checkbox' id="issuing_authority" name='fields' value='issuing_authority' checked disabled)
+							label(for='issuing_authority') Issuing Authority
+							input(type='hidden' name='fields' value='issuing_authority')
 						.checkbox
-							input(type='checkbox' id="familyName" name='fields' value='familyName')
-							label(for='familyName') Family Name
+							input(type='checkbox' id="given_name" name='fields' value='given_name')
+							label(for='given_name') Given Name
 						.checkbox
-							input(type='checkbox' id="personalIdentifier" name='fields' value='personalIdentifier')
-							label(for='personalIdentifier') Personal Identifier
+							input(type='checkbox' id="family_name" name='fields' value='family_name')
+							label(for='family_name') Family Name
+						.checkbox
+							input(type='checkbox' id="age_equal_or_over.18" name='fields' value='age_equal_or_over.18')
+							label(for='age_equal_or_over.18') Age Over 18
 						.checkbox
 							input(type='checkbox' id="birthdate" name='fields' value='birthdate')
-							label(for='birthdate') Date of Birth
+							label(for='birthdate') BirthDate
+
 					button.btn.btn-primary(type='submit') Present
 	link(rel="stylesheet" href="/styles/scan-qr-verifier.css")
