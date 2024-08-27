@@ -4,7 +4,7 @@ import { OpenidForPresentationsReceivingInterface, VerifierConfigurationInterfac
 import { VerifiableCredentialFormat } from "../types/oid4vci";
 import { AuthorizationRequestQueryParamsSchemaType } from "../types/oid4vci";
 import { TYPES } from "./types";
-import { importJWK, importX509, jwtVerify } from "jose";
+import { importJWK, importX509, JWK, jwtVerify, SignJWT } from "jose";
 import { KeyLike, createHash, randomUUID, verify, X509Certificate } from "crypto";
 import base64url from "base64url";
 import { PresentationDefinitionType, PresentationSubmission } from "@wwwallet/ssi-sdk";
@@ -13,7 +13,6 @@ import { JSONPath } from "jsonpath-plus";
 import { Repository } from "typeorm";
 import { ClaimRecord, PresentationClaims, VerifiablePresentationEntity } from "../entities/VerifiablePresentation.entity";
 import AppDataSource from "../AppDataSource";
-import config from "../../config";
 import { DidKeyResolverService } from "./DidKeyResolverService";
 import { HasherAlgorithm, HasherAndAlgorithm, SdJwt, SignatureAndEncryptionAlgorithm, Verifier } from "@sd-jwt/core";
 import fs from 'fs';
@@ -21,6 +20,10 @@ import path from "path";
 import { DataItem, DeviceSignedDocument, parse } from "@auth0/mdl";
 import cbor from 'cbor-x';
 import { verifyDeviceResponse } from "./lib/mdl/verify";
+import config from "../../config";
+
+const privateKeyJwk = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../keys/service.private.jwk.json")).toString()) as JWK;
+
 
 // https://identity.foundation/presentation-exchange/
 // The fields object MAY contain a name property. If present, its value MUST be a string, and SHOULD be a human-friendly name that describes what the target field represents.
@@ -36,13 +39,15 @@ const hasherAndAlgorithm: HasherAndAlgorithm = {
 }
 
 type VerifierState = {
+	issuanceSessionID?: number;
+
 	callbackEndpoint?: string;
 	authorizationRequest?: AuthorizationRequestQueryParamsSchemaType;
-	issuanceSessionID?: number;
-	presentation_definition?: PresentationDefinitionType;
+	presentation_definition: PresentationDefinitionType;
 	nonce: string;
 	response_uri: string;
 	client_id: string;
+	signedRequestObject: string;
 }
 
 const verifierStates = new Map<string, VerifierState>();
@@ -113,15 +118,6 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 		return payload;
 	}
 
-	private async addVPtokenRequestSpecificAttributes(verifierStateId: string, payload: any, presentationDefinition: object) {
-		const verifierState = verifierStates.get(verifierStateId);
-		if (verifierState) {
-			verifierStates.set(verifierStateId, { ...verifierState, presentation_definition: presentationDefinition as any })
-			payload = { ...payload, presentation_definition_uri: config.url + '/verification/definition?state=' + payload.state };
-			return payload;
-		}
-	}
-
 	public async getPresentationDefinitionHandler(ctx: { req: Request, res: Response }): Promise<void> {
 		const state = ctx.req.query.state as string;
 		if (state) {
@@ -135,45 +131,83 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 	}
 
 
-	async generateAuthorizationRequestURL(ctx: { req: Request, res: Response }, presentationDefinition: object, callbackEndpoint?: string): Promise<{ url: URL; stateId: string }> {
+	public async getSignedRequestObject(ctx: { req: Request, res: Response }): Promise<any> {
+		if (!ctx.req.query['id'] || typeof ctx.req.query['id'] != 'string') {
+			return ctx.res.status(500).send({ error: "id does not exist on query params" });
+		}
+		const verifierStateId = ctx.req.query['id'] as string;
+		const verifierState = verifierStates.get(verifierStateId);
+		if (!verifierState) {
+			return ctx.res.status(500).send({ error: "verifier state could not be fetched with this id" });
+		}
+		return ctx.res.send(verifierState.signedRequestObject);
+	}
+
+
+	async generateAuthorizationRequestURL(ctx: { req: Request, res: Response }, presentationDefinition: any, callbackEndpoint?: string): Promise<{ url: URL; stateId: string }> {
 		const nonce = randomUUID();
 		const stateId = randomUUID();
 		nonces.set(nonce, stateId);
-		let payload = {
-			client_id: this.configurationService.getConfiguration().client_id,
-			client_id_scheme: "redirect_uri",
+
+		console.log("Callback endpoint = ", callbackEndpoint)
+
+		const responseUri = this.configurationService.getConfiguration().redirect_uri;
+		const client_id = new URL(responseUri).hostname
+		const privateKey = await importJWK(privateKeyJwk, 'ES256');
+		const signedRequestObject = await new SignJWT({
+			response_uri: responseUri,
+			aud: "https://self-issued.me/v2",
+			iss: new URL(responseUri).hostname,
+			client_id_scheme: "x509_san_dns",
+			client_id: client_id,
 			response_type: "vp_token",
 			response_mode: "direct_post",
-			response_uri: this.configurationService.getConfiguration().redirect_uri,
-			scope: "openid",
+			state: stateId,
 			nonce: nonce,
-			state: stateId,
-		};
-
+			presentation_definition: presentationDefinition,
+			client_metadata: {
+				"vp_formats": {
+					"mso_mdoc": {
+						"alg": [
+							"ES256",
+						]
+					},
+					"vc+sd-jwt": {
+						"sd-jwt_alg_values": [
+							"ES256",
+						],
+						"kb-jwt_alg_values": [
+							"ES256",
+						]
+					}
+				}
+			},
+		})
+			.setIssuedAt()
+			.setProtectedHeader({
+				alg: privateKeyJwk.alg as string,
+				jwk: {
+					kty: privateKeyJwk.kty,
+					crv: privateKeyJwk.crv,
+					x: privateKeyJwk.x,
+					y: privateKeyJwk.y,
+				}
+			})
+			.sign(privateKey);
 		// try to get the redirect uri from the authorization server state in case this is a Dynamic User Authentication during OpenID4VCI authorization code flow
-		const redirectUri = ctx.req?.authorizationServerState?.redirect_uri ?? "openid://cb";
+		const redirectUri = ctx.req?.authorizationServerState?.redirect_uri ?? "openid4vp://cb";
 
-		verifierStates.set(stateId, { callbackEndpoint, nonce, response_uri: payload.response_uri, client_id: payload.client_id });
-		payload = await this.addVPtokenRequestSpecificAttributes(stateId, payload, presentationDefinition);
-		console.log("Payload = ", payload)
-		// const requestJwt = new SignJWT(payload)
-		// 	.setExpirationTime('30s');
+		verifierStates.set(stateId, { callbackEndpoint, nonce, response_uri: responseUri, client_id: client_id, signedRequestObject, presentation_definition: presentationDefinition });
 
-		// const { jws } = await this.walletKeystoreService.signJwt(
-		// 	this.configurationService.getConfiguration().authorizationServerWalletIdentifier,
-		// 	requestJwt,
-		// 	"JWT"
-		// );
+		const requestUri = config.url + "/verification/request-object?id=" + stateId;
 
-		// const requestJwtSigned = jws;
 		const redirectParameters = {
-			...payload,
-			state: stateId,
-			// request: requestJwtSigned,
+			client_id: client_id,
+			request_uri: requestUri
 		};
 
 		const searchParams = new URLSearchParams(redirectParameters);
-		const authorizationRequestURL = new URL(redirectUri + "?" + searchParams.toString()); // must be openid://cb
+		const authorizationRequestURL = new URL(redirectUri + "?" + searchParams.toString()); // must be openid4vp://cb
 		return { url: authorizationRequestURL, stateId };
 	}
 
@@ -190,10 +224,9 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 		// 	presentationSubmissionObject
 		// }
 
-		let verifierStateId = null;
-		let verifierState = null;
-		if (state) {
-			verifierState = verifierStates.get(state)
+		let verifierState = verifierStates.get(state);
+		if (!verifierState) {
+			throw new Error("Verifier state not found")
 		}
 		if (id_token) {
 			const header = JSON.parse(base64url.decode(id_token.split('.')[0])) as { kid: string, alg: string };
@@ -272,24 +305,42 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 
 			try {
 
+
 				console.log("Ver state = ", verifierState)
 				// load verifier state by nonce
-				if (!verifierState) {
-					const payload = JSON.parse(base64url.decode(vp_token.split('.')[1])) as any;
 
-					const { nonce } = payload;
-					let verifierStateIdByNonce = nonces.get(nonce as string);
-					verifierStateId = verifierStateIdByNonce;
-					if (!verifierStateIdByNonce) {
-						const msg = { error: "EXPIRED_NONCE", error_description: "This nonce does not exist or has expired" };
-						console.error(msg);
-						const searchParams = new URLSearchParams(msg);
-						ctx.res.redirect("/error" + '?' + searchParams);
-						throw new Error("OpenID4VP Authorization Response failed. " + msg);
-					}
-					verifierState = verifierStates.get(verifierStateIdByNonce);
+				if (presentationSubmissionObject?.descriptor_map[0].format != 'vc+sd-jwt' && presentationSubmissionObject?.descriptor_map[0].format != 'mso_mdoc') {
+					throw new Error("Not supported format");
 				}
 
+				if (presentationSubmissionObject?.descriptor_map[0].format == 'vc+sd-jwt') {
+					await (async function validateKbJwt() {
+						const sdJwt = vp_token.split('~').slice(0, -1).join('~') + '~';
+						const kbJwt = vp_token.split('~')[vp_token.split('~').length - 1] as string;
+						const { sd_hash, nonce, aud } = JSON.parse(base64url.decode(kbJwt.split('.')[1])) as any;
+						async function calculateHash(text: string) {
+							const encoder = new TextEncoder();
+							const data = encoder.encode(text);
+							const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+							const base64String = btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+							const base64UrlString = base64String.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+							return base64UrlString;
+						}
+						if (await calculateHash(sdJwt) != sd_hash) {
+							throw new Error("Wrong sd_hash");
+						}
+						if (aud != verifierState.client_id) {
+							throw new Error("Wrong aud");
+						}
+						let verifierStateIdByNonce = nonces.get(nonce as string);
+						if (!verifierStateIdByNonce) {
+							throw new Error("Invalid nonce");
+						}
+						return { sdJwt };
+					})();
+				}
+
+				console.log("VP token = ", vp_token)
 				if (!verifierState) {
 					const msg = { error: "ERROR_NONCE", error_description: "There is no verifier state with this 'nonce'" };
 					console.error(msg);
@@ -297,28 +348,6 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					ctx.res.redirect("/error" + '?' + searchParams);
 					throw new Error("OpenID4VP Authorization Response failed. " + msg);
 				}
-
-				// if (payload.sub !== verifierState?.authorizationRequest?.client_id) {
-				// 	let msg = { error: "INVALID_SUB", error_description: "Subject of vp_token should match authorizationRequest.client_id" };
-				// 	if (state) {
-				// 		msg = { ...msg, state } as any;
-				// 	}
-				// 	console.error(msg);
-				// 	const searchParams = new URLSearchParams(msg);
-				// 	res.redirect(verifierState?.authorizationRequest?.redirect_uri + '?' + searchParams);
-				// 	throw new Error("OpenID4VP Authorization Response failed." + msg);
-				// }
-
-				// if (payload.iss !== verifierState?.authorizationRequest?.client_id) {
-				// 	let msg = { error: "INVALID_ISS", error_description: "Issuer of vp_token should match authorizationRequest.client_id" };
-				// 	if (state) {
-				// 		msg = { ...msg, state } as any;
-				// 	}
-				// 	console.error(msg);
-				// 	const searchParams = new URLSearchParams(msg);
-				// 	res.redirect(verifierState?.authorizationRequest?.redirect_uri + '?' + searchParams);
-				// 	throw new Error("OpenID4VP Authorization Response failed. " + msg);
-				// }
 
 				// perform verification of vp_token
 				let msg = {};
@@ -357,8 +386,6 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					// ctx.res.redirect(verifierState.callbackEndpoint + '?' + searchParams);
 				}
 
-				console.log("binding issuanc sesssion id = ", verifierState.issuanceSessionID)
-				return { verifierStateId: verifierStateId as string, bindedUserSessionId: verifierState.issuanceSessionID };
 			}
 			catch (e) {
 				console.error(e)
@@ -371,19 +398,6 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 	private async validateVpToken(vp_token: string, presentation_submission: PresentationSubmission, verifierState: VerifierState): Promise<{ presentationClaims?: PresentationClaims, error?: Error, error_description?: Error }> {
 		let presentationClaims: PresentationClaims = {};
 
-		let payload: any;
-
-		if (presentation_submission.descriptor_map[0].format == VerifiableCredentialFormat.MSO_MDOC) {
-			payload = null;
-		}
-		else {
-			payload = JSON.parse(base64url.decode(vp_token.split('.')[1])) as { nonce: string, vp: { verifiableCredential: string[] } };
-			if (!payload.nonce || payload.nonce !== verifierState.nonce) {
-				return { error: new Error("PRESENTATION_RESPONSE:INVALID_NONCE" ), error_description: new Error("Invalid nonce") };
-			}
-		}
-
-
 
 
 		for (const desc of presentation_submission.descriptor_map) {
@@ -393,13 +407,11 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 
 
 			if (desc.format == VerifiableCredentialFormat.VC_SD_JWT) {
+				const sdJwt = vp_token.split('~').slice(0, -1).join('~') + '~';
+				const kbJwt = vp_token.split('~')[vp_token.split('~').length - 1] as string;
 				const path = desc?.path as string;
 				console.log("Path = ", path)
-				let verifiableCredential = JSONPath({ json: payload.vp, path: path })[0];
-				console.log("Verifiable credential = ", verifiableCredential)
-				if (verifiableCredential.length == 0) {
-					return { error: new Error("VC_NOT_FOUND"), error_description: new Error(`Path on descriptor ${desc.id} not matching to a credential`) };
-				}
+
 				const input_descriptor = verifierState!.presentation_definition!.input_descriptors.filter((input_desc: any) => input_desc.id == desc.id)[0];
 				if (!input_descriptor) {
 					return { error: new Error("Input descriptor not found") };
@@ -410,9 +422,20 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					return splittedPath[splittedPath.length - 1]; // return last part of the path
 				});
 
-				const sdJwt = SdJwt.fromCompact(verifiableCredential).withHasher(hasherAndAlgorithm);
+				const parsedSdJwt = SdJwt.fromCompact(sdJwt).withHasher(hasherAndAlgorithm);
 
-				const jwtPayload = (JSON.parse(base64url.decode(verifiableCredential.split('.')[1])) as any);
+				const jwtPayload = (JSON.parse(base64url.decode(sdJwt.split('.')[1])) as any);
+
+				// kbjwt validation
+				try {
+					const { alg } = JSON.parse(base64url.decode(kbJwt.split('.')[0])) as { alg: string }; 
+					const publicKey = await importJWK(jwtPayload.cnf.jwk, alg);
+					await jwtVerify(kbJwt, publicKey);
+				}
+				catch(err) {
+					return { error: new Error("PRESENTATION_RESPONSE:INVALID_KB_JWT"), error_description: new Error("KB JWT validation failed") };
+				}
+
 				const issuerDID = jwtPayload.iss;
 
 
@@ -439,14 +462,14 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 						});
 					}
 					const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
-					const alg = (JSON.parse(base64url.decode(verifiableCredential.split('.')[0])) as any).alg;
+					const alg = (JSON.parse(base64url.decode(sdJwt.split('.')[0])) as any).alg;
 					const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
 
 					return verify(null, Buffer.from(message), issuerPublicKey as KeyLike, signature)
 				}
 
-				const verificationResult = await sdJwt.verify(verifyCb, requiredClaimNames);
-				const prettyClaims = await sdJwt.getPrettyClaims();
+				const verificationResult = await parsedSdJwt.verify(verifyCb, requiredClaimNames);
+				const prettyClaims = await parsedSdJwt.getPrettyClaims();
 
 				input_descriptor.constraints.fields.map((field: any) => {
 					if (!presentationClaims[desc.id]) {
@@ -464,38 +487,6 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					return { error: new Error("SD_JWT_VERIFICATION_FAILURE"), error_description: new Error(`Verification result ${JSON.stringify(verificationResult)}`) };
 				}
 			}
-			else if (desc.format == VerifiableCredentialFormat.JWT_VC) {
-				const path = desc?.path as string;
-				console.log("Path = ", path)
-				let verifiableCredential = JSONPath({ json: payload.vp, path: path })[0];
-				console.log("Verifiable credential = ", verifiableCredential)
-				if (verifiableCredential.length == 0) {
-					return { error: new Error("VC_NOT_FOUND"), error_description: new Error(`Path on descriptor ${desc.id} not matching to a credential`) };
-				}
-				const input_descriptor = verifierState!.presentation_definition!.input_descriptors.filter((input_desc: any) => input_desc.id == desc.id)[0];
-				if (!input_descriptor) {
-					return { error: new Error("Input descriptor not found") };
-				}
-				const jwtPayload = (JSON.parse(base64url.decode(verifiableCredential.split('.')[1])) as any);
-				const issuerDID = jwtPayload.iss;
-				const issuerPublicKeyJwk = await this.didKeyResolverService.getPublicKeyJwk(issuerDID);
-				const alg = (JSON.parse(base64url.decode(verifiableCredential.split('.')[0])) as any).alg;
-				const issuerPublicKey = await importJWK(issuerPublicKeyJwk, alg);
-
-				await jwtVerify(verifiableCredential, issuerPublicKey);
-
-				input_descriptor.constraints.fields.map((field: any) => {
-					if (!presentationClaims[desc.id]) {
-						presentationClaims[desc.id] = []; // initialize
-					}
-					const fieldPath = field.path[0]; // get first path
-					const fieldName = (field as CustomInputDescriptorConstraintFieldType).name;
-					const value = String(JSONPath({ path: fieldPath, json: jwtPayload.vc })[0]);
-					const splittedPath = fieldPath.split('.');
-					const claimName = fieldName ? fieldName : splittedPath;
-					presentationClaims[desc.id].push({ name: claimName, value: typeof value == 'object' ? JSON.stringify(value) : value } as ClaimRecord);
-				});
-			}
 			else if (desc.format == VerifiableCredentialFormat.MSO_MDOC) {
 				const definition = this.configurationService.getPresentationDefinitions().filter((pd) => pd.id == presentation_submission.definition_id)[0]
 				console.log("Credential to be mdoc parsed = ", vp_token)
@@ -506,7 +497,7 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 				json[parsed.documents[0].docType] = ns;
 
 				// TODO: read verifier generated nonce from payload of device signature part
-				const [ document ] = parsed.documents as DeviceSignedDocument[];
+				const [document] = parsed.documents as DeviceSignedDocument[];
 				const p: DataItem = cbor.decode(document.deviceSigned.deviceAuth.deviceSignature!.payload);
 
 				const [_devAuth, [_deviceEngagementBytes, _eReaderKeyBytes, [mdocGeneratedNonce, clientId, responseUri, verifierGeneratedNonce]]] = p.data;
@@ -514,22 +505,22 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 				// verify that the session transcript is matching with the verifier session data (nonce, client_id, repsonse_uri)
 				console.log("Device signature payload containts = ", [mdocGeneratedNonce, clientId, responseUri, verifierGeneratedNonce]);
 				if (verifierGeneratedNonce !== verifierState.nonce) { // check nonce
-					return { error: new Error("PRESENTATION_RESPONSE:INVALID_NONCE" ), error_description: new Error("Invalid nonce") };
+					return { error: new Error("PRESENTATION_RESPONSE:INVALID_NONCE"), error_description: new Error("Invalid nonce") };
 				}
 
 				if (responseUri !== verifierState.response_uri) {
-					return { error: new Error("PRESENTATION_RESPONSE:INVALID_RESPONSE_URI" ), error_description: new Error("Invalid response_uri") };
+					return { error: new Error("PRESENTATION_RESPONSE:INVALID_RESPONSE_URI"), error_description: new Error("Invalid response_uri") };
 				}
 
 				if (clientId !== verifierState.client_id) {
-					return { error: new Error("PRESENTATION_RESPONSE:INVALID_CLIENT_ID" ), error_description: new Error("Invalid client_id") };
+					return { error: new Error("PRESENTATION_RESPONSE:INVALID_CLIENT_ID"), error_description: new Error("Invalid client_id") };
 				}
-				
-				const verificationResult = await verifyDeviceResponse(Buffer.from(vp_token, 'base64url'), [ rootCert ], verifierState.client_id, verifierState.response_uri, verifierState.nonce, mdocGeneratedNonce)
+
+				const verificationResult = await verifyDeviceResponse(Buffer.from(vp_token, 'base64url'), [rootCert], verifierState.client_id, verifierState.response_uri, verifierState.nonce, mdocGeneratedNonce)
 
 				if (!verificationResult) {
 					console.log("Failed to verify the mdoc credential");
-					return  { error: new Error("PRESENTATION_RESPONSE:MDOC_VERIFICATION_FAILED"), error_description: new Error("Failed to verify the mdoc credential") };
+					return { error: new Error("PRESENTATION_RESPONSE:MDOC_VERIFICATION_FAILED"), error_description: new Error("Failed to verify the mdoc credential") };
 				}
 				const fieldNamesWithValues = definition.input_descriptors[0].constraints.fields.map((field) => {
 					const values = field.path.map((possiblePath) => JSONPath({ path: possiblePath, json: json })[0]);
@@ -541,7 +532,7 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 					return { error: new Error("INSUFFICIENT_CREDENTIALS"), error_description: new Error("Insufficient credentials") };
 				}
 
-				for (const { name, value } of fieldNamesWithValues as {name: string, value: string }[]) {
+				for (const { name, value } of fieldNamesWithValues as { name: string, value: string }[]) {
 					presentationClaims[desc.id].push({ name, value });
 				}
 
