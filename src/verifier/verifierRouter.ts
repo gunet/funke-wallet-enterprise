@@ -190,7 +190,7 @@ verifierRouter.use('/public/definitions/presentation-request/:presentation_defin
 		presentationDefinition.input_descriptors[0].constraints.fields = filteredFields;
 	}
 
-	const { url } = await openidForPresentationReceivingService.generateAuthorizationRequestURL({req, res}, presentationDefinition, config.url + "/verifier/success");	
+	const { url, stateId } = await openidForPresentationReceivingService.generateAuthorizationRequestURL({req, res}, presentationDefinition, config.url + "/verifier/success");	
 	let authorizationRequestQR = await new Promise((resolve) => {
 		qrcode.toDataURL(url.toString(), {
 			margin: 1,
@@ -208,7 +208,7 @@ verifierRouter.use('/public/definitions/presentation-request/:presentation_defin
 		wwwalletURL: config.wwwalletURL,
 		authorizationRequestURL: url.toString(),
 		authorizationRequestQR,
-		state: url.searchParams.get('state'),
+		state: stateId,
 		lang: req.lang,
 		locale: locale[req.lang],
 	})
