@@ -11,6 +11,10 @@ block layout-content
 							label(for='issuing_country') Issuing Country
 							input(type='hidden' name='fields' value='issuing_country')
 						.checkbox
+							input(type='checkbox' id="issuing_authority" name='fields' value='issuing_authority' checked disabled)
+							label(for='issuing_authority') Issuing Authority
+							input(type='hidden' name='fields' value='issuing_authority')
+						.checkbox
 							input(type='checkbox' id="given_name" name='fields' value='given_name')
 							label(for='given_name') Given Name
 						.checkbox
@@ -22,8 +26,6 @@ block layout-content
 						.checkbox
 							input(type='checkbox' id="birthdate" name='fields' value='birthdate')
 							label(for='birthdate') BirthDate
-						.checkbox
-							input(type='checkbox' id="issuing_authority" name='fields' value='issuing_authority')
-							label(for='issuing_authority') Issuing Authority
+
 					button.btn.btn-primary(type='submit') Present
 	link(rel="stylesheet" href="/styles/scan-qr-verifier.css")
