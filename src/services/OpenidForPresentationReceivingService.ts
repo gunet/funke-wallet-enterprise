@@ -4,7 +4,7 @@ import { OpenidForPresentationsReceivingInterface, VerifierConfigurationInterfac
 import { VerifiableCredentialFormat } from "../types/oid4vci";
 import { AuthorizationRequestQueryParamsSchemaType } from "../types/oid4vci";
 import { TYPES } from "./types";
-import { importJWK, importX509, JWK, jwtVerify, SignJWT } from "jose";
+import { importJWK, importPKCS8, importX509, jwtVerify, SignJWT } from "jose";
 import { KeyLike, createHash, randomUUID, verify, X509Certificate } from "crypto";
 import base64url from "base64url";
 import { PresentationDefinitionType, PresentationSubmission } from "@wwwallet/ssi-sdk";
@@ -22,8 +22,8 @@ import cbor from 'cbor-x';
 import { verifyDeviceResponse } from "./lib/mdl/verify";
 import config from "../../config";
 
-const privateKeyJwk = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../keys/service.private.jwk.json")).toString()) as JWK;
-
+const privateKeyPem = fs.readFileSync(path.join(__dirname, "../../../keys/wallet-enterprise-acme-verifier.key"), 'utf-8').toString();
+const x5c = JSON.parse(fs.readFileSync(path.join(__dirname, "../../../keys/x5c.json")).toString()) as Array<string>;
 
 // https://identity.foundation/presentation-exchange/
 // The fields object MAY contain a name property. If present, its value MUST be a string, and SHOULD be a human-friendly name that describes what the target field represents.
@@ -153,7 +153,9 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 
 		const responseUri = this.configurationService.getConfiguration().redirect_uri;
 		const client_id = new URL(responseUri).hostname
-		const privateKey = await importJWK(privateKeyJwk, 'ES256');
+		// const privateKey = await importJWK(privateKeyJwk, 'ES256');
+		const privateKey = await importPKCS8(privateKeyPem, 'RS256');
+
 		const signedRequestObject = await new SignJWT({
 			response_uri: responseUri,
 			aud: "https://self-issued.me/v2",
@@ -185,13 +187,8 @@ export class OpenidForPresentationsReceivingService implements OpenidForPresenta
 		})
 			.setIssuedAt()
 			.setProtectedHeader({
-				alg: privateKeyJwk.alg as string,
-				jwk: {
-					kty: privateKeyJwk.kty,
-					crv: privateKeyJwk.crv,
-					x: privateKeyJwk.x,
-					y: privateKeyJwk.y,
-				}
+				alg: 'RS256',
+				x5c: x5c,
 			})
 			.sign(privateKey);
 		// try to get the redirect uri from the authorization server state in case this is a Dynamic User Authentication during OpenID4VCI authorization code flow
